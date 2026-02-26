@@ -49,7 +49,7 @@ extern "C" void app_main(void) {
 
     //alarm every 500ms
     gptimer_alarm_config_t alarm_cfg = {
-        .alarm_count = 500000,
+        .alarm_count = 1000,
         .reload_count = 0,
         .flags = {
             .auto_reload_on_alarm = true,
