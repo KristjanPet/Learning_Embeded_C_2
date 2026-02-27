@@ -5,6 +5,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include <esp_timer.h>
 
 static const char* TAG = "spi_dma_sd";
 
@@ -37,7 +38,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
     spi_device_interface_config_t devcfg{};
-    devcfg.clock_speed_hz = 400000;       // 400 kHz for SD init
+    devcfg.clock_speed_hz = 10 * 1000 * 1000;       // 10MHz for SD init
     devcfg.mode = 0;                      // SPI mode 0
     devcfg.spics_io_num = PIN_CS;
     devcfg.queue_size = 1;
@@ -45,10 +46,12 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &sd_dev));
 
     // DMA-capable buffers
-    const size_t N = 16;
+    const size_t N = 16 * 1024;
     auto* tx = (uint8_t*)heap_caps_malloc(N, MALLOC_CAP_DMA);
     auto* rx = (uint8_t*)heap_caps_malloc(N, MALLOC_CAP_DMA);
     assert(tx && rx);
+    static constexpr int ITER = 200;
+    const size_t chunk = 2048;
 
     // 80 dummy clocks: send at least 10 bytes of 0xFF with CS high.
     // Easiest: temporarily set CS as GPIO output and drive high, then send 0xFFs.
@@ -58,8 +61,16 @@ extern "C" void app_main(void) {
     memset(tx, 0xFF, N);
     memset(rx, 0x00, N);
 
+    int64_t t0 = esp_timer_get_time();
     // CS high dummy clocks
-    ESP_ERROR_CHECK(spi_txrx(tx, rx, N));
+    for (int i = 0; i < ITER; i++) {
+        for(int j = 0; j < N; j += chunk){
+            ESP_ERROR_CHECK(spi_txrx(tx + j, rx + j, chunk));
+        }
+    }
+
+    int64_t t1 = esp_timer_get_time();
+    ESP_LOGI(TAG, "Transferred %d x %u bytes in %lld us (%.2f MB/s)", ITER, (unsigned)N, (long long)(t1 - t0), (double)(ITER * N) / (double)(t1 - t0)); // bytes/us == MB/s approx
 
     // Now give CS back to SPI peripheral by re-adding device with spics_io_num,
     // simplest: just set CS low manually for CMD0 phase and do manual-CS transfers later.
