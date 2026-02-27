@@ -24,8 +24,15 @@ static esp_err_t spi_txrx(const uint8_t* tx, uint8_t* rx, size_t len){
     return spi_device_transmit(sd_dev, &t);
 }
 
-extern "C" void app_main(void) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+static void hog_task(void*){
+    volatile uint32_t x = 0;
+    for (int i = 0; i<2000000; i++){
+        x+=i;
+    }
+    while (true) vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+static void transfer_task(void*){
     ESP_LOGI(TAG, "Init SPI bus...");
 
     spi_bus_config_t buscfg{};
@@ -68,7 +75,7 @@ extern "C" void app_main(void) {
             ESP_ERROR_CHECK(spi_txrx(tx + j, rx + j, chunk));
         }
     }
-
+    while (true) vTaskDelay(pdMS_TO_TICKS(1000));
     int64_t t1 = esp_timer_get_time();
     ESP_LOGI(TAG, "Transferred %d x %u bytes in %lld us (%.2f MB/s)", ITER, (unsigned)N, (long long)(t1 - t0), (double)(ITER * N) / (double)(t1 - t0)); // bytes/us == MB/s approx
 
@@ -94,6 +101,14 @@ extern "C" void app_main(void) {
 
     // Release CS
     gpio_set_level((gpio_num_t)PIN_CS, 1);
+
+    while (true) vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+extern "C" void app_main(void) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    xTaskCreatePinnedToCore(hog_task, "hog", 2048, nullptr, 5, nullptr, 1);
+    xTaskCreatePinnedToCore(transfer_task, "transfer", 4096, nullptr, 10, nullptr, 1);
 
     while (true) vTaskDelay(pdMS_TO_TICKS(1000));
 }
