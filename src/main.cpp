@@ -58,8 +58,8 @@ static void busy_toggle_task(void*)
 
     while (true) {
         // crude busy loop: period depends on CPU frequency and compiler optimizations
-        for (volatile int i = 0; i < 200000; i++) { }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        for (volatile int i = 0; i < 50000; i++) {  }
+        vTaskDelay(pdMS_TO_TICKS(200));
         level = !level;
         gpio_set_level(GPIO_BUSY, level);
     }
