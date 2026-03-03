@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include <cstring>
 
 static const char* TAG = "mem_demo";
 
@@ -25,6 +26,10 @@ static void worker_task(void*){
     ESP_LOGI(TAG, "worker stack high-water: %u words (~%u bytes)",
          (unsigned)hw0, (unsigned)hw0 * (unsigned)sizeof(StackType_t));
 
+
+    uint8_t scratch[1200];
+    memset(scratch, 0xA5, sizeof(scratch));
+    ESP_LOGI(TAG, "scratch=%p", scratch);
     // alocate and free varying sizes to mimic a fregmentation-risk patteren
     std::vector<void*> blocks;
     blocks.reserve(200);
@@ -76,7 +81,7 @@ extern "C" void app_main(void)
 {
     report_mem("boot");
 
-    xTaskCreatePinnedToCore(worker_task, "worker", 4096, nullptr, 10, nullptr, 1);
+    xTaskCreatePinnedToCore(worker_task, "worker", 2048, nullptr, 10, nullptr, 1);
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(2000));
