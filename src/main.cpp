@@ -5,7 +5,7 @@
 #include "driver/gptimer.h"
 #include "esp_log.h"
 #include "esp_pm.h"
-#include "esp_clk.h"
+#include "esp_private/esp_clk.h"
 
 static const char* TAG = "clock_demo";
 
