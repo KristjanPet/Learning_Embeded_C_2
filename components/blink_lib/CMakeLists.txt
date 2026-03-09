@@ -1,4 +1,5 @@
 idf_component_register(
-    SOURCES "blink_lib.cpp"
-    INCLUDE_DIRECTORIES "include"
+    SRCS "blink_lib.cpp"
+    INCLUDE_DIRS "include"
+    REQUIRES driver
 )
