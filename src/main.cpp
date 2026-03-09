@@ -4,7 +4,7 @@
 
 extern "C" void app_main(void)
 {
-    blink_lib::init(GPIO_NUM_2);
+    blink_lib::init(2);
 
     while (true) {
         blink_lib::toggle();

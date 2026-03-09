@@ -1,8 +1,9 @@
 #pragma once
-#include "driver/gpio.h"
+#include <cstdint>
+// #include "driver/gpio.h"
 
 namespace blink_lib {
-    void init(gpio_num_t pin);
+    void init(int pin);
     void set(bool on);
     void toggle();
 }
