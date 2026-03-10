@@ -18,6 +18,8 @@ struct RxFrame {
 
 static const char* TAG = "rs485_lab";
 
+static QueueHandle_t g_ack_q = nullptr;
+
 // UART1 (Module A)
 static constexpr uart_port_t U_TX = UART_NUM_1;
 static constexpr int U_TX_PIN = 17;
@@ -31,6 +33,16 @@ static constexpr int U2_RX_PIN = 26;
 static constexpr int U2_DE_PIN  = 5;
 
 static constexpr int BAUD = 115200;
+
+static uint32_t read_u32_le(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void write_u32_le(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
 
 static uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
     uint16_t crc = 0xFFFF;
@@ -109,34 +121,18 @@ static bool parse_stream_byte(uint8_t b, RxFrame& out, std::vector<uint8_t>& buf
     return true;
 }
 
-static void rx_task(void*) {
-    // Receive on UART2 (Module B)
-    rs485_set_rx(U2_DE_PIN);
+static esp_err_t rs485_send(uart_port_t port, int de_gpio,
+                            const uint8_t* data, size_t len) {
+    rs485_set_tx(de_gpio);
+    vTaskDelay(pdMS_TO_TICKS(1));
 
-    std::vector<uint8_t> buf;
-    buf.reserve(256);
-    int64_t last_byte_us = 0;
+    int written = uart_write_bytes(port, (const char*)data, (int)len);
+    if (written != (int)len) return ESP_FAIL;
 
-    while (true) {
-        uint8_t b;
-        int n = uart_read_bytes(U2_TX, &b, 1, pdMS_TO_TICKS(200));
-        if (n == 0) {
-            ESP_LOGW(TAG, "UART2 timeout (no bytes)");
-            continue;
-        }
-        ESP_LOGI(TAG, "UART2 got byte: 0x%02X", b);
+    ESP_ERROR_CHECK(uart_wait_tx_done(port, pdMS_TO_TICKS(50)));
 
-        RxFrame f;
-        if (parse_stream_byte(b, f, buf, last_byte_us)) {
-            ESP_LOGI(TAG, "RX frame: type=0x%02X payload_len=%u", f.type, (unsigned)f.payload.size());
-            if (!f.payload.empty()) {
-                ESP_LOGI(TAG, "Payload first bytes: %02X %02X %02X ...",
-                         f.payload[0],
-                         f.payload.size() > 1 ? f.payload[1] : 0,
-                         f.payload.size() > 2 ? f.payload[2] : 0);
-            }
-        }
-    }
+    rs485_set_rx(de_gpio);
+    return ESP_OK;
 }
 
 static std::vector<uint8_t> make_frame(uint8_t type, const uint8_t* payload, uint8_t payload_len) {
@@ -157,18 +153,69 @@ static std::vector<uint8_t> make_frame(uint8_t type, const uint8_t* payload, uin
     return f;
 }
 
-static esp_err_t rs485_send(uart_port_t port, int de_gpio,
-                            const uint8_t* data, size_t len) {
-    rs485_set_tx(de_gpio);
-    vTaskDelay(pdMS_TO_TICKS(1));
+static void rx_task(void*) {
+    // Receive on UART2 (Module B)
+    rs485_set_rx(U2_DE_PIN);
 
-    int written = uart_write_bytes(port, (const char*)data, (int)len);
-    if (written != (int)len) return ESP_FAIL;
+    std::vector<uint8_t> buf;
+    buf.reserve(256);
+    int64_t last_byte_us = 0;
 
-    ESP_ERROR_CHECK(uart_wait_tx_done(port, pdMS_TO_TICKS(50)));
+    while (true) {
+        uint8_t b;
+        int n = uart_read_bytes(U2_TX, &b, 1, pdMS_TO_TICKS(200));
+        if (n == 0) {
+            continue;
+        }
 
-    rs485_set_rx(de_gpio);
-    return ESP_OK;
+        RxFrame f;
+        if (parse_stream_byte(b, f, buf, last_byte_us)) {
+            ESP_LOGI(TAG, "RX frame: type=0x%02X payload_len=%u", f.type, (unsigned)f.payload.size());
+
+            // If this is our data frame (TYPE=0x01), reply with ACK(TYPE=0x02) containing counter (first 4 bytes)
+            if (f.type == 0x01 && f.payload.size() >= 4) {
+                uint32_t counter = read_u32_le(f.payload.data());
+
+                uint8_t ack_payload[4];
+                write_u32_le(ack_payload, counter);
+
+                auto ack_frame = make_frame(0x02, ack_payload, sizeof(ack_payload));
+
+                // Small turnaround delay helps on some setups
+                vTaskDelay(pdMS_TO_TICKS(1));
+
+                // Send ACK from Module B back onto the same bus
+                (void)rs485_send(U2_TX, U2_DE_PIN, ack_frame.data(), ack_frame.size());
+            }
+        }
+    }
+}
+
+static void rx_ack_task(void*) {
+    // Module A in RX so we can receive ACKs
+    rs485_set_rx(U_DE_PIN);
+
+    std::vector<uint8_t> buf;
+    buf.reserve(256);
+    int64_t last_byte_us = 0;
+
+    while (true) {
+        uint8_t b;
+        int n = uart_read_bytes(U_TX, &b, 1, pdMS_TO_TICKS(200));
+        if (n == 0) {
+            buf.clear();
+            last_byte_us = 0;
+            continue;
+        }
+
+        RxFrame f;
+        if (parse_stream_byte(b, f, buf, last_byte_us)) {
+            if (f.type == 0x02 && f.payload.size() >= 4) {
+                uint32_t ack = read_u32_le(f.payload.data());
+                xQueueSend(g_ack_q, &ack, 0);
+            }
+        }
+    }
 }
 
 extern "C" void app_main(void)
@@ -182,7 +229,11 @@ extern "C" void app_main(void)
     uart_init_port(U_TX, U_TX_PIN, U_RX_PIN);
     uart_init_port(U2_TX, U2_TX_PIN, U2_RX_PIN);
 
+    g_ack_q = xQueueCreate(8, sizeof(int32_t));
+    assert(g_ack_q);
+
     xTaskCreatePinnedToCore(rx_task, "rx", 4096, nullptr, 10, nullptr, 1);
+    xTaskCreatePinnedToCore(rx_ack_task, "rx_ack", 4096, nullptr, 10, nullptr, 1);
 
     uint32_t counter = 0;
     while (true) {
@@ -191,10 +242,34 @@ extern "C" void app_main(void)
         payload[4] = 0xDE; payload[5] = 0xAD; payload[6] = 0xBE; payload[7] = 0xEF;
 
         auto frame = make_frame(0x01, payload, sizeof(payload));
-        esp_err_t err = rs485_send(U_TX, U_DE_PIN, frame.data(), frame.size());
-        ESP_LOGI(TAG, "TX frame counter=%u (%s)", (unsigned)counter, err == ESP_OK ? "OK" : "FAIL");
-        counter++;
 
+        bool ok = false;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            // Clear any stale ACKs
+            uint32_t dummy;
+            while (xQueueReceive(g_ack_q, &dummy, 0) == pdTRUE) {}
+
+            esp_err_t err = rs485_send(U_TX, U_DE_PIN, frame.data(), frame.size());
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "TX failed attempt %d", attempt);
+                continue;
+            }
+
+            uint32_t ack = 0;
+            if (xQueueReceive(g_ack_q, &ack, pdMS_TO_TICKS(50)) == pdTRUE && ack == counter) {
+                ESP_LOGI(TAG, "TX counter=%u ACK OK (attempt %d)", (unsigned)counter, attempt);
+                ok = true;
+                break;
+            } else {
+                ESP_LOGW(TAG, "TX counter=%u ACK TIMEOUT (attempt %d)", (unsigned)counter, attempt);
+            }
+        }
+
+        if (!ok) {
+            ESP_LOGE(TAG, "TX counter=%u failed after retries", (unsigned)counter);
+        }
+
+        counter++;
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
