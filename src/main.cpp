@@ -23,14 +23,12 @@ static constexpr uart_port_t U_TX = UART_NUM_1;
 static constexpr int U_TX_PIN = 17;
 static constexpr int U_RX_PIN = 16;
 static constexpr int U_DE_PIN  = 4;
-static constexpr int U_REN_PIN = 27;
 
 // UART2 (Module B)
 static constexpr uart_port_t U2_TX = UART_NUM_2;
 static constexpr int U2_TX_PIN = 25;
 static constexpr int U2_RX_PIN = 26;
 static constexpr int U2_DE_PIN  = 5;
-static constexpr int U2_REN_PIN = 14;
 
 static constexpr int BAUD = 115200;
 
@@ -45,14 +43,12 @@ static uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
     return crc;
 }
 
-static void rs485_set_tx(int de_gpio, int ren_gpio) {
+static void rs485_set_tx(int de_gpio) {
     gpio_set_level((gpio_num_t)de_gpio, 1); // DE=1
-    gpio_set_level((gpio_num_t)ren_gpio, 1); // /RE=1 (receiver disabled)
 }
 
-static void rs485_set_rx(int de_gpio, int ren_gpio) {
+static void rs485_set_rx(int de_gpio) {
     gpio_set_level((gpio_num_t)de_gpio, 0); // DE=0
-    gpio_set_level((gpio_num_t)ren_gpio, 0); // /RE=0 (receiver enabled)
 }
 
 // ---------- UART init ----------
@@ -115,7 +111,7 @@ static bool parse_stream_byte(uint8_t b, RxFrame& out, std::vector<uint8_t>& buf
 
 static void rx_task(void*) {
     // Receive on UART2 (Module B)
-    rs485_set_rx(U2_DE_PIN, U2_REN_PIN);
+    rs485_set_rx(U2_DE_PIN);
 
     std::vector<uint8_t> buf;
     buf.reserve(256);
@@ -161,9 +157,9 @@ static std::vector<uint8_t> make_frame(uint8_t type, const uint8_t* payload, uin
     return f;
 }
 
-static esp_err_t rs485_send(uart_port_t port, int de_gpio, int ren_gpio,
+static esp_err_t rs485_send(uart_port_t port, int de_gpio,
                             const uint8_t* data, size_t len) {
-    rs485_set_tx(de_gpio, ren_gpio);
+    rs485_set_tx(de_gpio);
     vTaskDelay(pdMS_TO_TICKS(1));
 
     int written = uart_write_bytes(port, (const char*)data, (int)len);
@@ -171,40 +167,31 @@ static esp_err_t rs485_send(uart_port_t port, int de_gpio, int ren_gpio,
 
     ESP_ERROR_CHECK(uart_wait_tx_done(port, pdMS_TO_TICKS(50)));
 
-    rs485_set_rx(de_gpio, ren_gpio);
+    rs485_set_rx(de_gpio);
     return ESP_OK;
 }
 
 extern "C" void app_main(void)
 {
     gpio_set_direction((gpio_num_t)U_DE_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_direction((gpio_num_t)U_REN_PIN, GPIO_MODE_OUTPUT);
     gpio_set_direction((gpio_num_t)U2_DE_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_direction((gpio_num_t)U2_REN_PIN, GPIO_MODE_OUTPUT);
 
-    rs485_set_rx(U_DE_PIN, U_REN_PIN);
-    rs485_set_rx(U2_DE_PIN, U2_REN_PIN);
+    rs485_set_rx(U_DE_PIN);
+    rs485_set_rx(U2_DE_PIN);
 
     uart_init_port(U_TX, U_TX_PIN, U_RX_PIN);
     uart_init_port(U2_TX, U2_TX_PIN, U2_RX_PIN);
-
-    gpio_set_level((gpio_num_t)U2_DE_PIN, 0);
-    gpio_set_level((gpio_num_t)U2_REN_PIN, 0);  
 
     xTaskCreatePinnedToCore(rx_task, "rx", 4096, nullptr, 10, nullptr, 1);
 
     uint32_t counter = 0;
     while (true) {
-        //TEMP
-        const char* msg = "HELLO";
-        uart_write_bytes(U2_TX, msg, 5);
-
         uint8_t payload[8];
         memcpy(payload, &counter, sizeof(counter));
         payload[4] = 0xDE; payload[5] = 0xAD; payload[6] = 0xBE; payload[7] = 0xEF;
 
         auto frame = make_frame(0x01, payload, sizeof(payload));
-        esp_err_t err = rs485_send(U_TX, U_DE_PIN, U_REN_PIN, frame.data(), frame.size());
+        esp_err_t err = rs485_send(U_TX, U_DE_PIN, frame.data(), frame.size());
         ESP_LOGI(TAG, "TX frame counter=%u (%s)", (unsigned)counter, err == ESP_OK ? "OK" : "FAIL");
         counter++;
 
